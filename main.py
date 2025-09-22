@@ -14,9 +14,6 @@ import sys
 from comfy_execution.progress import get_progress_state
 from comfy_execution.utils import get_executing_context
 from comfy_api import feature_flags
-import subprocess
-import threading
-import requests
 
 if __name__ == "__main__":
     #NOTE: These do not do anything on core ComfyUI, they are for custom nodes.
@@ -110,6 +107,7 @@ execute_prestartup_script()
 # Main code
 import asyncio
 import shutil
+import threading
 import gc
 
 
@@ -291,97 +289,6 @@ def setup_database():
         logging.error(f"Failed to initialize database. Please ensure you have installed the latest requirements. If the error persists, please report this as in future the database will be required: {e}")
 
 
-def check_comfyui_ready():
-    """ComfyUI'nin hazır olup olmadığını kontrol et"""
-    url = f"http://localhost:{args.port}"
-    try:
-        response = requests.get(url, timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def start_cloudflared():
-    """Cloudflared tunnel'ı başlat"""
-    # Cloudflared dosyasının yolunu belirle
-    cloudflared_path = os.path.join(os.path.dirname(__file__), 'cloudflared-linux-386')
-    
-    # Dosyanın var olduğunu kontrol et
-    if not os.path.exists(cloudflared_path):
-        logging.error(f"✗ Cloudflared dosyası bulunamadı: {cloudflared_path}")
-        return
-    
-    # İzinleri ayarla (chmod +x)
-    try:
-        os.chmod(cloudflared_path, 0o755)
-        logging.info(f"✓ Cloudflared izinleri ayarlandı: {cloudflared_path}")
-    except Exception as e:
-        logging.error(f"✗ Cloudflared izinleri ayarlanırken hata: {e}")
-        return
-    
-    # ComfyUI'nin başlamasını bekle
-    logging.info("⏳ ComfyUI'nin başlaması bekleniyor...")
-    max_attempts = 30
-    for attempt in range(max_attempts):
-        if check_comfyui_ready():
-            logging.info("✓ ComfyUI hazır! Cloudflared başlatılıyor...")
-            break
-        logging.info(f"⏳ ComfyUI hazır değil, tekrar denenecek... ({attempt + 1}/{max_attempts})")
-        time.sleep(2)
-    else:
-        logging.error("✗ ComfyUI zaman aşımına uğradı, cloudflared başlatılamıyor")
-        return
-    
-    # Cloudflared'i başlat
-    try:
-        # Cloudflared komutunu oluştur
-        cmd = [
-            cloudflared_path,
-            'tunnel',
-            '--url', f'localhost:{args.port}'
-        ]
-        
-        # Cloudflared'i başlat
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-        
-        # Çıktıyı dinle
-        def read_output():
-            while True:
-                output = process.stdout.readline()
-                if output == '' and process.poll() is not None:
-                    break
-                if output:
-                    logging.info(f"[cloudflared] {output.strip()}")
-        
-        # Hata çıktısını dinle
-        def read_errors():
-            while True:
-                error = process.stderr.readline()
-                if error == '' and process.poll() is not None:
-                    break
-                if error:
-                    logging.error(f"[cloudflared ERROR] {error.strip()}")
-        
-        # Thread'leri başlat
-        output_thread = threading.Thread(target=read_output, daemon=True)
-        error_thread = threading.Thread(target=read_errors, daemon=True)
-        output_thread.start()
-        error_thread.start()
-        
-        logging.info("✓ Cloudflared başarıyla başlatıldı!")
-        
-        # Process'in bitmesini bekle
-        process.wait()
-        
-    except Exception as e:
-        logging.error(f"✗ Cloudflared başlatılırken hata: {e}")
-
 def start_comfyui(asyncio_loop=None):
     """
     Starts the ComfyUI server using the provided asyncio event loop or creates a new one.
@@ -438,10 +345,6 @@ def start_comfyui(asyncio_loop=None):
     async def start_all():
         await prompt_server.setup()
         await run(prompt_server, address=args.listen, port=args.port, verbose=not args.dont_print_server, call_on_start=call_on_start)
-
-    # Cloudflared'i ayrı bir thread'de başlat
-    cloudflared_thread = threading.Thread(target=start_cloudflared, daemon=True)
-    cloudflared_thread.start()
 
     # Returning these so that other code can integrate with the ComfyUI loop and server
     return asyncio_loop, prompt_server, start_all
